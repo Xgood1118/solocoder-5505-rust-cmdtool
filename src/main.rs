@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::cmds::csvkit::CsvAction;
 use crate::core::config::AppConfig;
+use crate::core::error::classify_exit_code;
 use crate::core::exit;
 use crate::core::history::History;
 use crate::core::logger;
@@ -54,6 +55,9 @@ enum Commands {
 
         #[arg(long)]
         execute: bool,
+
+        #[arg(long, short = 'y')]
+        yes: bool,
 
         #[arg(long)]
         undo: bool,
@@ -191,7 +195,7 @@ fn main() {
 
     let exit_code = result.unwrap_or_else(|e| {
         logger::log_error!("{}: {}", cmd_name, e);
-        exit::EXIT_GENERAL
+        classify_exit_code(&e)
     });
 
     if let Some(h) = history {
@@ -204,7 +208,7 @@ fn main() {
 fn run_command(cli: &Cli, config: &AppConfig) -> Result<i32, anyhow::Error> {
     match &cli.command {
         Commands::Rename {
-            mode, start, width, pattern, replacement, prefix, suffix, execute, undo, files,
+            mode, start, width, pattern, replacement, prefix, suffix, execute, yes, undo, files,
         } => {
             let rename_mode = match mode.as_deref() {
                 Some("numbered") | None => cmds::rename::RenameMode::Numbered {
@@ -239,6 +243,7 @@ fn run_command(cli: &Cli, config: &AppConfig) -> Result<i32, anyhow::Error> {
                 paths: files.clone(),
                 mode: rename_mode,
                 dry_run,
+                yes: *yes,
                 undo: *undo,
                 prefix: prefix.clone(),
                 suffix: suffix.clone(),

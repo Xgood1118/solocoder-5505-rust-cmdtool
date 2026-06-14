@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use csv::{Reader, ReaderBuilder, Writer, WriterBuilder};
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -43,7 +44,7 @@ fn merge(inputs: &[PathBuf], output: &Path) -> Result<i32> {
 
     for input in inputs {
         if signal::is_interrupted() {
-            return Ok(exit::EXIT_INTERRUPTED);
+            return Ok(exit::EXIT_UNKNOWN);
         }
         let mut reader = make_reader(input)?;
         let headers = reader.headers()?.clone();
@@ -55,7 +56,7 @@ fn merge(inputs: &[PathBuf], output: &Path) -> Result<i32> {
 
         for result in reader.records() {
             if signal::is_interrupted() {
-                return Ok(exit::EXIT_INTERRUPTED);
+                return Ok(exit::EXIT_UNKNOWN);
             }
             let record = result?;
             writer.write_record(&record)?;
@@ -81,7 +82,7 @@ fn split(input: &Path, rows_per_file: usize, output_dir: &Path) -> Result<i32> {
 
     for result in reader.records() {
         if signal::is_interrupted() {
-            return Ok(exit::EXIT_INTERRUPTED);
+            return Ok(exit::EXIT_UNKNOWN);
         }
         let record = result?;
         writer.write_record(&record)?;
@@ -113,7 +114,7 @@ fn dedup(input: &Path, output: &Path, columns: &[usize]) -> Result<i32> {
 
     for result in reader.records() {
         if signal::is_interrupted() {
-            return Ok(exit::EXIT_INTERRUPTED);
+            return Ok(exit::EXIT_UNKNOWN);
         }
         let record = result?;
         let key: String = if columns.is_empty() {
@@ -135,8 +136,25 @@ fn dedup(input: &Path, output: &Path, columns: &[usize]) -> Result<i32> {
     }
 
     writer.flush()?;
-    logger::log_info!("{} total, {} duplicates removed, {} unique rows", total, dupes, total - dupes);
+    logger::log_info!(
+        "{} total, {} duplicates removed, {} unique rows",
+        total,
+        dupes,
+        total - dupes
+    );
     Ok(exit::EXIT_OK)
+}
+
+fn col_value_cmp(a: &str, b: &str) -> Option<Ordering> {
+    let (na, nb) = (a.parse::<f64>(), b.parse::<f64>());
+    if let (Ok(na), Ok(nb)) = (na, nb) {
+        return na.partial_cmp(&nb);
+    }
+    Some(a.cmp(b))
+}
+
+fn col_value_contains(haystack: &str, needle: &str) -> bool {
+    haystack.contains(needle)
 }
 
 fn eval_filter(col_val: &str, op: &str, val: &str) -> bool {
@@ -152,20 +170,6 @@ fn eval_filter(col_val: &str, op: &str, val: &str) -> bool {
     }
 }
 
-use std::cmp::Ordering;
-
-fn col_value_cmp(a: &str, b: &str) -> Option<Ordering> {
-    let (na, nb) = (a.parse::<f64>(), b.parse::<f64>());
-    if let (Ok(na), Ok(nb)) = (na, nb) {
-        return na.partial_cmp(&nb);
-    }
-    Some(a.cmp(b))
-}
-
-fn col_value_contains(haystack: &str, needle: &str) -> bool {
-    haystack.contains(needle)
-}
-
 fn filter(input: &Path, output: &Path, column: usize, operator: &str, value: &str) -> Result<i32> {
     let mut reader = make_reader(input)?;
     let headers = reader.headers()?.clone();
@@ -177,7 +181,7 @@ fn filter(input: &Path, output: &Path, column: usize, operator: &str, value: &st
 
     for result in reader.records() {
         if signal::is_interrupted() {
-            return Ok(exit::EXIT_INTERRUPTED);
+            return Ok(exit::EXIT_UNKNOWN);
         }
         let record = result?;
         total += 1;
@@ -202,7 +206,7 @@ fn add_header(input: &Path, output: &Path, headers: &[String]) -> Result<i32> {
 
     for result in reader.records() {
         if signal::is_interrupted() {
-            return Ok(exit::EXIT_INTERRUPTED);
+            return Ok(exit::EXIT_UNKNOWN);
         }
         let record = result?;
         writer.write_record(&record)?;

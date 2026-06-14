@@ -26,7 +26,7 @@ pub fn run(opts: &RecentOpts, _config: &AppConfig) -> Result<i32> {
 
     for entry in WalkDir::new(&opts.directory).into_iter().filter_map(|e| e.ok()) {
         if signal::is_interrupted() {
-            return Ok(exit::EXIT_INTERRUPTED);
+            return Ok(exit::EXIT_UNKNOWN);
         }
 
         let path = entry.path();

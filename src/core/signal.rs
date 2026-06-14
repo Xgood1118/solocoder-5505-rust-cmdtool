@@ -18,6 +18,6 @@ pub fn setup_ctrlc(temp_files: Arc<std::sync::Mutex<Vec<std::path::PathBuf>>>) {
                 }
             }
         }
-        std::process::exit(5);
+        std::process::exit(crate::core::exit::EXIT_UNKNOWN);
     }).expect("failed to set ctrlc handler");
 }

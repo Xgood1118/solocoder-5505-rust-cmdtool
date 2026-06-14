@@ -23,6 +23,7 @@ pub struct RenameOpts {
     pub paths: Vec<PathBuf>,
     pub mode: RenameMode,
     pub dry_run: bool,
+    pub yes: bool,
     pub undo: bool,
     pub prefix: Option<String>,
     pub suffix: Option<String>,
@@ -89,7 +90,7 @@ fn generate_new_name(
     Ok(original.with_file_name(result))
 }
 
-fn save_rename_map(_path: &Path, renames: &[(PathBuf, PathBuf)]) -> Result<()> {
+fn ensure_rename_table() -> Result<()> {
     let db = get_connection()?;
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS rename_map (
@@ -99,6 +100,12 @@ fn save_rename_map(_path: &Path, renames: &[(PathBuf, PathBuf)]) -> Result<()> {
             new_path TEXT NOT NULL
         );"
     )?;
+    Ok(())
+}
+
+fn save_rename_map(renames: &[(PathBuf, PathBuf)]) -> Result<()> {
+    ensure_rename_table()?;
+    let db = get_connection()?;
     let batch_id = Local::now().format("%Y%m%d%H%M%S%3f").to_string();
     for (old, new) in renames {
         db.execute(
@@ -109,7 +116,34 @@ fn save_rename_map(_path: &Path, renames: &[(PathBuf, PathBuf)]) -> Result<()> {
     Ok(())
 }
 
+fn is_tty_stdin() -> bool {
+    atty::is(atty::Stream::Stdin)
+}
+
+fn confirm_rename(count: usize, auto_yes: bool) -> bool {
+    if auto_yes {
+        return true;
+    }
+    if !is_tty_stdin() {
+        logger::log_warn!("not a TTY: skipping interactive confirmation. pass -y/--yes to force execute");
+        return false;
+    }
+    match dialoguer::Confirm::new()
+        .with_prompt(format!("rename {} file(s)?", count))
+        .default(false)
+        .interact()
+    {
+        Ok(v) => v,
+        Err(e) => {
+            logger::log_error!("confirmation failed: {}", e);
+            false
+        }
+    }
+}
+
 pub fn run(opts: &RenameOpts, _config: &AppConfig) -> Result<i32> {
+    ensure_rename_table()?;
+
     if opts.undo {
         return run_undo();
     }
@@ -123,7 +157,7 @@ pub fn run(opts: &RenameOpts, _config: &AppConfig) -> Result<i32> {
 
     for (i, path) in opts.paths.iter().enumerate() {
         if signal::is_interrupted() {
-            return Ok(exit::EXIT_INTERRUPTED);
+            return Ok(exit::EXIT_UNKNOWN);
         }
         if !path.exists() {
             logger::log_warn!("skip nonexistent: {:?}", path);
@@ -148,27 +182,25 @@ pub fn run(opts: &RenameOpts, _config: &AppConfig) -> Result<i32> {
         }
     }
 
+    save_rename_map(&renames)?;
+
     if opts.dry_run {
-        logger::log_info!("dry run: {} file(s) would be renamed. use --execute to apply.", renames.len());
+        logger::log_info!(
+            "dry run: {} file(s) would be renamed. pass --execute and confirm (or -y) to apply.",
+            renames.len()
+        );
         return Ok(exit::EXIT_OK);
     }
 
-    let confirm = dialoguer::Confirm::new()
-        .with_prompt(format!("rename {} file(s)?", renames.len()))
-        .default(false)
-        .interact()?;
-
-    if !confirm {
+    if !confirm_rename(renames.len(), opts.yes) {
         logger::log_info!("aborted");
         return Ok(exit::EXIT_OK);
     }
 
-    save_rename_map(Path::new("."), &renames)?;
-
     let mut errors = 0;
     for (old, new) in &renames {
         if signal::is_interrupted() {
-            return Ok(exit::EXIT_INTERRUPTED);
+            return Ok(exit::EXIT_UNKNOWN);
         }
         if let Err(e) = fs::rename(old, new) {
             logger::log_error!("failed: {:?} -> {:?}: {}", old, new, e);
@@ -186,6 +218,7 @@ pub fn run(opts: &RenameOpts, _config: &AppConfig) -> Result<i32> {
 }
 
 fn run_undo() -> Result<i32> {
+    ensure_rename_table()?;
     let db = get_connection()?;
     let mut stmt = db.prepare(
         "SELECT batch_id, old_path, new_path FROM rename_map ORDER BY id DESC"
@@ -204,6 +237,8 @@ fn run_undo() -> Result<i32> {
     let latest_batch = &rows[0].0;
     let batch: Vec<_> = rows.iter().filter(|r| r.0 == *latest_batch).collect();
 
+    logger::log_info!("undoing batch {} with {} file(s)", latest_batch, batch.len());
+
     let mut errors = 0;
     for (_, old, new) in batch {
         if Path::new(new).exists() {
@@ -213,6 +248,8 @@ fn run_undo() -> Result<i32> {
             } else {
                 logger::log_info!("undo: {:?} -> {:?}", new, old);
             }
+        } else {
+            logger::log_warn!("skip missing {:?}", new);
         }
     }
 
